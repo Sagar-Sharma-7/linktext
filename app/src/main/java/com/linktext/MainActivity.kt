@@ -206,7 +206,11 @@ private fun HomeScreen(
                 items(nearby, key = { it.address }) { device ->
                     Card(Modifier.fillMaxWidth()) { Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) { Text(device.name); Text(device.address, style = MaterialTheme.typography.labelSmall) }
-                        TextButton(onClick = { onSave(device) }) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(4.dp)); Text("Add") }
+                        TextButton(onClick = { onSave(device) }) {
+                            Icon(Icons.Default.Add, null)
+                            Spacer(Modifier.width(4.dp))
+                            Text(if (device.isPaired) "Add paired" else "Add")
+                        }
                     } }
                 }
             }

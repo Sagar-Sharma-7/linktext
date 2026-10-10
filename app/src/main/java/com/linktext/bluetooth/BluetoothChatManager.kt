@@ -66,7 +66,11 @@ class BluetoothChatManager(private val context: Context) {
     fun discover() {
         val localAdapter = adapter ?: run { _status.value = "Bluetooth is not available on this phone"; return }
         if (!localAdapter.isEnabled) { _status.value = "Turn Bluetooth on to find people nearby"; return }
-        _nearby.value = emptyList()
+        // A paired phone is already known to Android; it does not have to advertise again to appear here.
+        // This is more dependable than discovery alone on recent Android versions.
+        _nearby.value = localAdapter.bondedDevices.orEmpty().map { device ->
+            NearbyDevice(device.address, device.name ?: "Unnamed paired device", isPaired = true)
+        }.sortedBy { it.name.lowercase() }
         if (!receiverRegistered) {
             ContextCompat.registerReceiver(context, discoveryReceiver, IntentFilter().apply {
                 addAction(BluetoothDevice.ACTION_FOUND)
@@ -75,8 +79,13 @@ class BluetoothChatManager(private val context: Context) {
             receiverRegistered = true
         }
         localAdapter.cancelDiscovery()
-        _status.value = "Scanning for nearby devices…"
-        localAdapter.startDiscovery()
+        val scanStarted = localAdapter.startDiscovery()
+        _status.value = when {
+            scanStarted && _nearby.value.isNotEmpty() -> "Showing paired devices and scanning nearby…"
+            scanStarted -> "Scanning for nearby devices…"
+            _nearby.value.isNotEmpty() -> "Showing paired devices"
+            else -> "Could not start Bluetooth discovery"
+        }
     }
 
     fun startListening() = scope.launch {

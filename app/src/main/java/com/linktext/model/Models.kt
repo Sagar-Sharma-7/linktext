@@ -16,5 +16,5 @@ data class ChatMessage(
     val replyPreview: String? = null
 )
 
-data class NearbyDevice(val address: String, val name: String)
+data class NearbyDevice(val address: String, val name: String, val isPaired: Boolean = false)
 
