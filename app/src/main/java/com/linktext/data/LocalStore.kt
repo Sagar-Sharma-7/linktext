@@ -4,6 +4,7 @@ import android.content.Context
 import com.linktext.model.ChatMessage
 import com.linktext.model.Contact
 import com.linktext.model.DeliveryStatus
+import com.linktext.model.RelayEnvelope
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -39,6 +40,39 @@ class LocalStore(context: Context) {
 
     fun updateDelivery(id: String, delivery: DeliveryStatus) {
         writeMessages(messages().map { if (it.id == id) it.copy(delivery = delivery) else it })
+    }
+
+    fun relayEnabled(): Boolean = preferences.getBoolean("relay_enabled", false)
+
+    fun setRelayEnabled(enabled: Boolean) {
+        preferences.edit().putBoolean("relay_enabled", enabled).apply()
+    }
+
+    fun relayQueue(): List<RelayEnvelope> = readArray("relay_queue").map { json ->
+        RelayEnvelope(
+            id = json.getString("id"), senderAddress = json.getString("senderAddress"),
+            recipientAddress = json.getString("recipientAddress"), body = json.getString("body"),
+            timestamp = json.getLong("timestamp"), replyToId = json.optString("replyToId").ifBlank { null },
+            replyPreview = json.optString("replyPreview").ifBlank { null }
+        )
+    }
+
+    fun saveRelay(envelope: RelayEnvelope) {
+        val existing = relayQueue()
+        if (existing.any { it.id == envelope.id }) return
+        writeArray("relay_queue", (existing + envelope).takeLast(100).map { JSONObject().apply {
+            put("id", it.id); put("senderAddress", it.senderAddress); put("recipientAddress", it.recipientAddress)
+            put("body", it.body); put("timestamp", it.timestamp)
+            put("replyToId", it.replyToId ?: ""); put("replyPreview", it.replyPreview ?: "")
+        } })
+    }
+
+    fun removeRelay(id: String) {
+        writeArray("relay_queue", relayQueue().filterNot { it.id == id }.map { JSONObject().apply {
+            put("id", it.id); put("senderAddress", it.senderAddress); put("recipientAddress", it.recipientAddress)
+            put("body", it.body); put("timestamp", it.timestamp)
+            put("replyToId", it.replyToId ?: ""); put("replyPreview", it.replyPreview ?: "")
+        } })
     }
 
     private fun writeMessages(all: List<ChatMessage>) {

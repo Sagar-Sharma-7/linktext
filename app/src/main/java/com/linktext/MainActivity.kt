@@ -45,6 +45,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -69,6 +70,7 @@ import com.linktext.model.ChatMessage
 import com.linktext.model.Contact
 import com.linktext.model.DeliveryStatus
 import com.linktext.model.NearbyDevice
+import com.linktext.model.RelayEnvelope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -105,6 +107,10 @@ class LinkTextViewModel(application: android.app.Application) : AndroidViewModel
     val contacts: StateFlow<List<Contact>> = _contacts.asStateFlow()
     private val _messages = MutableStateFlow(store.messages())
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
+    private val _relayEnabled = MutableStateFlow(store.relayEnabled())
+    val relayEnabled: StateFlow<Boolean> = _relayEnabled.asStateFlow()
+    private val _relayQueueCount = MutableStateFlow(store.relayQueue().size)
+    val relayQueueCount: StateFlow<Int> = _relayQueueCount.asStateFlow()
     val nearby = bluetooth.nearby
     val status = bluetooth.status
     val connectionAddress = bluetooth.connectionAddress
@@ -114,7 +120,10 @@ class LinkTextViewModel(application: android.app.Application) : AndroidViewModel
             bluetooth.incoming.collect { payload -> payload?.let(::receive) }
         }
         viewModelScope.launch {
-            bluetooth.connectionAddress.collect { address -> address?.let(::flushQueuedMessages) }
+            bluetooth.connectionAddress.collect { address -> address?.let {
+                flushQueuedMessages(it)
+                forwardRelayMessages(it)
+            } }
         }
     }
 
@@ -124,6 +133,11 @@ class LinkTextViewModel(application: android.app.Application) : AndroidViewModel
     fun bluetoothEnabled() = bluetooth.isEnabled()
     fun connect(contact: Contact) = bluetooth.connect(contact.address)
 
+    fun setRelayEnabled(enabled: Boolean) {
+        store.setRelayEnabled(enabled)
+        _relayEnabled.value = enabled
+    }
+
     fun saveDevice(device: NearbyDevice) {
         store.saveContact(Contact(device.address, device.name))
         _contacts.value = store.contacts()
@@ -132,8 +146,14 @@ class LinkTextViewModel(application: android.app.Application) : AndroidViewModel
     fun send(contact: Contact, text: String, reply: ChatMessage?): Boolean {
         if (text.isBlank()) return false
         val initial = ChatMessage(UUID.randomUUID().toString(), contact.address, text.trim(), true, System.currentTimeMillis(), reply?.id, reply?.body)
-        val sent = bluetooth.connectionAddress.value == contact.address && bluetooth.send(messagePayload(initial))
-        store.saveMessage(initial.copy(delivery = if (sent) DeliveryStatus.SENT else DeliveryStatus.QUEUED))
+        val connectedAddress = bluetooth.connectionAddress.value
+        val sent = connectedAddress != null && bluetooth.send(messagePayload(initial))
+        val delivery = when {
+            !sent -> DeliveryStatus.QUEUED
+            connectedAddress == contact.address -> DeliveryStatus.SENT
+            else -> DeliveryStatus.HANDED_TO_RELAY
+        }
+        store.saveMessage(initial.copy(delivery = delivery))
         _messages.value = store.messages()
         return true
     }
@@ -149,15 +169,48 @@ class LinkTextViewModel(application: android.app.Application) : AndroidViewModel
         _messages.value = store.messages()
     }
 
+    private fun forwardRelayMessages(address: String) {
+        store.relayQueue()
+            .filter { it.recipientAddress.equals(address, ignoreCase = true) }
+            .forEach { envelope ->
+                if (bluetooth.send(relayPayload(envelope))) store.removeRelay(envelope.id)
+            }
+        _relayQueueCount.value = store.relayQueue().size
+    }
+
     private fun messagePayload(message: ChatMessage) = JSONObject().apply {
         put("id", message.id); put("body", message.body); put("timestamp", message.timestamp)
         put("replyToId", message.replyToId ?: ""); put("replyPreview", message.replyPreview ?: "")
+        put("senderAddress", bluetooth.localAddress() ?: "")
+        put("recipientAddress", message.contactAddress)
+    }
+
+    private fun relayPayload(envelope: RelayEnvelope) = JSONObject().apply {
+        put("id", envelope.id); put("body", envelope.body); put("timestamp", envelope.timestamp)
+        put("replyToId", envelope.replyToId ?: ""); put("replyPreview", envelope.replyPreview ?: "")
+        put("senderAddress", envelope.senderAddress); put("recipientAddress", envelope.recipientAddress)
     }
 
     private fun receive(payload: JSONObject) {
-        val address = connectionAddress.value ?: return
+        val relayAddress = connectionAddress.value ?: return
+        val localAddress = bluetooth.localAddress()
+        val recipientAddress = payload.optString("recipientAddress", localAddress ?: relayAddress)
+        val senderAddress = payload.optString("senderAddress", relayAddress).ifBlank { relayAddress }
+        if (localAddress != null && !recipientAddress.equals(localAddress, ignoreCase = true)) {
+            if (_relayEnabled.value && payload.optString("body").isNotBlank()) {
+                store.saveRelay(RelayEnvelope(
+                    id = payload.optString("id", UUID.randomUUID().toString()), senderAddress = senderAddress,
+                    recipientAddress = recipientAddress, body = payload.optString("body"),
+                    timestamp = payload.optLong("timestamp", System.currentTimeMillis()),
+                    replyToId = payload.optString("replyToId").ifBlank { null },
+                    replyPreview = payload.optString("replyPreview").ifBlank { null }
+                ))
+                _relayQueueCount.value = store.relayQueue().size
+            }
+            return
+        }
         val message = ChatMessage(
-            payload.optString("id", UUID.randomUUID().toString()), address, payload.optString("body"), false,
+            payload.optString("id", UUID.randomUUID().toString()), senderAddress, payload.optString("body"), false,
             payload.optLong("timestamp", System.currentTimeMillis()), payload.optString("replyToId").ifBlank { null },
             payload.optString("replyPreview").ifBlank { null }, DeliveryStatus.SENT
         )
@@ -174,6 +227,8 @@ private fun LinkTextApp(viewModel: LinkTextViewModel, hasPermission: () -> Boole
     val contacts by viewModel.contacts.collectAsState()
     val nearby by viewModel.nearby.collectAsState()
     val status by viewModel.status.collectAsState()
+    val relayEnabled by viewModel.relayEnabled.collectAsState()
+    val relayQueueCount by viewModel.relayQueueCount.collectAsState()
     var selected by remember { mutableStateOf<Contact?>(null) }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
         if (granted.values.all { it }) viewModel.begin()
@@ -188,6 +243,9 @@ private fun LinkTextApp(viewModel: LinkTextViewModel, hasPermission: () -> Boole
                     else if (!viewModel.bluetoothEnabled()) enableBluetooth()
                     else { viewModel.begin(); viewModel.discover() }
                 },
+                relayEnabled = relayEnabled,
+                relayQueueCount = relayQueueCount,
+                onRelayChanged = viewModel::setRelayEnabled,
                 onSave = viewModel::saveDevice,
                 onOpen = { selected = it }
             ) else ChatScreen(selected!!, viewModel, { selected = null })
@@ -199,7 +257,8 @@ private fun LinkTextApp(viewModel: LinkTextViewModel, hasPermission: () -> Boole
 @Composable
 private fun HomeScreen(
     contacts: List<Contact>, nearby: List<NearbyDevice>, status: String,
-    onPrepare: () -> Unit, onSave: (NearbyDevice) -> Unit, onOpen: (Contact) -> Unit
+    onPrepare: () -> Unit, relayEnabled: Boolean, relayQueueCount: Int, onRelayChanged: (Boolean) -> Unit,
+    onSave: (NearbyDevice) -> Unit, onOpen: (Contact) -> Unit
 ) {
     Scaffold(
         topBar = { CenterAlignedTopAppBar(title = { Text("LinkText", fontWeight = FontWeight.Bold) }) },
@@ -211,6 +270,22 @@ private fun HomeScreen(
                     Text(status, style = MaterialTheme.typography.bodyMedium)
                     Spacer(Modifier.height(8.dp))
                     Text("Direct, private nearby chats. No account, SIM, or data connection needed.", style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(12.dp))
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Relay mode (beta)", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                if (relayEnabled) "$relayQueueCount message(s) waiting to forward" else "Off — this phone will not forward other people's messages",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        Switch(checked = relayEnabled, onCheckedChange = onRelayChanged)
+                    }
+                    if (relayEnabled) Text(
+                        "Beta: relay packets are stored temporarily on this phone and are not end-to-end encrypted yet.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
                 } }
             }
             item { Text("Your contacts", style = MaterialTheme.typography.titleMedium) }
@@ -254,7 +329,17 @@ private fun ChatScreen(contact: Contact, viewModel: LinkTextViewModel, back: () 
 
     Scaffold(
         topBar = { CenterAlignedTopAppBar(
-            title = { Column(horizontalAlignment = Alignment.CenterHorizontally) { Text(contact.name); Text(if (connectedAddress == contact.address) "Connected" else "Nearby required", style = MaterialTheme.typography.labelSmall) } },
+            title = { Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(contact.name)
+                Text(
+                    when {
+                        connectedAddress == contact.address -> "Connected"
+                        connectedAddress != null -> "Connected to relay"
+                        else -> "Nearby required"
+                    },
+                    style = MaterialTheme.typography.labelSmall
+                )
+            } },
             navigationIcon = { IconButton(onClick = back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
             actions = { TextButton(onClick = { viewModel.connect(contact) }) { Text("Connect") } }
         ) }
@@ -283,6 +368,9 @@ private fun MessageBubble(message: ChatMessage, reply: () -> Unit) {
                 SelectionContainer { Text(message.body) }
                 if (message.sentByMe && message.delivery == DeliveryStatus.QUEUED) {
                     Text("Queued — deliver when nearby", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                if (message.sentByMe && message.delivery == DeliveryStatus.HANDED_TO_RELAY) {
+                    Text("Handed to relay — awaiting delivery", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }

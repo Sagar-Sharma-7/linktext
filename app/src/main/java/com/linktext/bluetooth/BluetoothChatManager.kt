@@ -62,6 +62,7 @@ class BluetoothChatManager(private val context: Context) {
 
     fun isAvailable(): Boolean = adapter != null
     fun isEnabled(): Boolean = adapter?.isEnabled == true
+    fun localAddress(): String? = adapter?.address
 
     fun discover() {
         val localAdapter = adapter ?: run { _status.value = "Bluetooth is not available on this phone"; return }
