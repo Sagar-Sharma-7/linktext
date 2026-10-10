@@ -117,7 +117,7 @@ class BluetoothChatManager(private val context: Context) {
             currentWriter.flush()
         }
         true
-    }.getOrElse { _status.value = "Message not sent: device is not connected"; false }
+    }.getOrElse { _status.value = "Message queued: connect to deliver it"; false }
 
     private fun attach(newSocket: BluetoothSocket) {
         socket?.close()

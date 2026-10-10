@@ -3,6 +3,7 @@ package com.linktext.data
 import android.content.Context
 import com.linktext.model.ChatMessage
 import com.linktext.model.Contact
+import com.linktext.model.DeliveryStatus
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -26,17 +27,27 @@ class LocalStore(context: Context) {
             id = json.getString("id"), contactAddress = json.getString("contactAddress"),
             body = json.getString("body"), sentByMe = json.getBoolean("sentByMe"),
             timestamp = json.getLong("timestamp"), replyToId = json.optString("replyToId").ifBlank { null },
-            replyPreview = json.optString("replyPreview").ifBlank { null }
+            replyPreview = json.optString("replyPreview").ifBlank { null },
+            delivery = runCatching { DeliveryStatus.valueOf(json.optString("delivery", DeliveryStatus.SENT.name)) }
+                .getOrDefault(DeliveryStatus.SENT)
         )
     }
 
     fun saveMessage(message: ChatMessage) {
-        val all = messages() + message
+        writeMessages(messages() + message)
+    }
+
+    fun updateDelivery(id: String, delivery: DeliveryStatus) {
+        writeMessages(messages().map { if (it.id == id) it.copy(delivery = delivery) else it })
+    }
+
+    private fun writeMessages(all: List<ChatMessage>) {
         // This deliberately keeps the starter lightweight. Move to Room for a production message archive.
         writeArray("messages", all.takeLast(1_000).map { JSONObject().apply {
             put("id", it.id); put("contactAddress", it.contactAddress); put("body", it.body)
             put("sentByMe", it.sentByMe); put("timestamp", it.timestamp)
             put("replyToId", it.replyToId ?: ""); put("replyPreview", it.replyPreview ?: "")
+            put("delivery", it.delivery.name)
         } })
     }
 

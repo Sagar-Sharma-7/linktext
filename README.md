@@ -8,11 +8,12 @@ An Android starter app for direct, nearby messaging over Bluetooth Classic. It u
 - Makes a direct RFCOMM Bluetooth connection for a one-to-one conversation.
 - Sends plain text and Unicode emoji.
 - Stores messages and contact labels only on the device.
+- Queues an outgoing message locally when a contact is out of Bluetooth range, then sends it when that same contact reconnects.
 - Supports dark theme and quoted replies (tap a message to reply to it).
 
 ## Important product boundary
 
-This is **nearby** messaging: both phones need Bluetooth enabled and be within Bluetooth range when a message is sent. Bluetooth Classic normally reaches about 10 metres, sometimes farther depending on hardware and obstructions. It is not a long-distance messenger and does not relay through other phones yet.
+This is **nearby** messaging: both phones need Bluetooth enabled and be within Bluetooth range for instant delivery. Bluetooth Classic normally reaches about 10 metres, sometimes farther depending on hardware and obstructions. If a recipient is unavailable, LinkText keeps the message queued until those same two phones reconnect; it is not a long-distance messenger and does not relay through other phones.
 
 ## Open in Android Studio
 

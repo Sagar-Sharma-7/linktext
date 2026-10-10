@@ -13,8 +13,11 @@ data class ChatMessage(
     val sentByMe: Boolean,
     val timestamp: Long,
     val replyToId: String? = null,
-    val replyPreview: String? = null
+    val replyPreview: String? = null,
+    val delivery: DeliveryStatus = DeliveryStatus.SENT
 )
+
+enum class DeliveryStatus { QUEUED, SENT }
 
 data class NearbyDevice(val address: String, val name: String, val isPaired: Boolean = false)
 

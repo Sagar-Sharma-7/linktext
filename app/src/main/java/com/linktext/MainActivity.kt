@@ -67,6 +67,7 @@ import com.linktext.bluetooth.BluetoothChatManager
 import com.linktext.data.LocalStore
 import com.linktext.model.ChatMessage
 import com.linktext.model.Contact
+import com.linktext.model.DeliveryStatus
 import com.linktext.model.NearbyDevice
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -112,6 +113,9 @@ class LinkTextViewModel(application: android.app.Application) : AndroidViewModel
         viewModelScope.launch {
             bluetooth.incoming.collect { payload -> payload?.let(::receive) }
         }
+        viewModelScope.launch {
+            bluetooth.connectionAddress.collect { address -> address?.let(::flushQueuedMessages) }
+        }
     }
 
     fun begin() { bluetooth.startListening() }
@@ -127,16 +131,27 @@ class LinkTextViewModel(application: android.app.Application) : AndroidViewModel
 
     fun send(contact: Contact, text: String, reply: ChatMessage?): Boolean {
         if (text.isBlank()) return false
-        val message = ChatMessage(UUID.randomUUID().toString(), contact.address, text.trim(), true, System.currentTimeMillis(), reply?.id, reply?.body)
-        val sent = bluetooth.send(JSONObject().apply {
-            put("id", message.id); put("body", message.body); put("timestamp", message.timestamp)
-            put("replyToId", message.replyToId ?: ""); put("replyPreview", message.replyPreview ?: "")
-        })
-        if (sent) {
-            store.saveMessage(message)
-            _messages.value = store.messages()
-        }
-        return sent
+        val initial = ChatMessage(UUID.randomUUID().toString(), contact.address, text.trim(), true, System.currentTimeMillis(), reply?.id, reply?.body)
+        val sent = bluetooth.connectionAddress.value == contact.address && bluetooth.send(messagePayload(initial))
+        store.saveMessage(initial.copy(delivery = if (sent) DeliveryStatus.SENT else DeliveryStatus.QUEUED))
+        _messages.value = store.messages()
+        return true
+    }
+
+    private fun flushQueuedMessages(address: String) {
+        _messages.value
+            .filter { it.sentByMe && it.contactAddress == address && it.delivery == DeliveryStatus.QUEUED }
+            .forEach { message ->
+                if (bluetooth.send(messagePayload(message))) {
+                    store.updateDelivery(message.id, DeliveryStatus.SENT)
+                }
+            }
+        _messages.value = store.messages()
+    }
+
+    private fun messagePayload(message: ChatMessage) = JSONObject().apply {
+        put("id", message.id); put("body", message.body); put("timestamp", message.timestamp)
+        put("replyToId", message.replyToId ?: ""); put("replyPreview", message.replyPreview ?: "")
     }
 
     private fun receive(payload: JSONObject) {
@@ -144,7 +159,7 @@ class LinkTextViewModel(application: android.app.Application) : AndroidViewModel
         val message = ChatMessage(
             payload.optString("id", UUID.randomUUID().toString()), address, payload.optString("body"), false,
             payload.optLong("timestamp", System.currentTimeMillis()), payload.optString("replyToId").ifBlank { null },
-            payload.optString("replyPreview").ifBlank { null }
+            payload.optString("replyPreview").ifBlank { null }, DeliveryStatus.SENT
         )
         if (_messages.value.none { it.id == message.id }) {
             store.saveMessage(message); _messages.value = store.messages()
@@ -266,6 +281,9 @@ private fun MessageBubble(message: ChatMessage, reply: () -> Unit) {
             Column(Modifier.padding(12.dp).width(260.dp)) {
                 message.replyPreview?.let { Text("↪ $it", style = MaterialTheme.typography.labelSmall, maxLines = 2, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 SelectionContainer { Text(message.body) }
+                if (message.sentByMe && message.delivery == DeliveryStatus.QUEUED) {
+                    Text("Queued — deliver when nearby", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
         }
     }
